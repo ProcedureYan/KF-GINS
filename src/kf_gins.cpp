@@ -33,7 +33,11 @@
 
 #include "kf-gins/gi_engine.h"
 
+// KF-GINS 使用 YMAL 格式的配置文件，通过配置文件可以设置数据文件路径、处理时间段、初始PVA、初始比例零偏、杆臂等。
+// KF-GINS 的配置都是键值对形式的： 键 :值，设置的时候改后面的值即可（注意缩进要用空格而不能用 Tab）。
+// 程序执行的时候要把配置文件路径作为命令行参数。
 bool loadConfig(YAML::Node &config, GINSOptions &options);
+
 void writeNavResult(double time, NavState &navstate, FileSaver &navfile, FileSaver &imuerrfile);
 void writeSTD(double time, Eigen::MatrixXd &cov, FileSaver &stdfile);
 

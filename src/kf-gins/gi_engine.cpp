@@ -99,12 +99,12 @@ void GIEngine::newImuProcess() {
     // set update time as the gnss time if gnssdata is valid
     double updatetime = gnssdata_.isvalid ? gnssdata_.time : -1;
 
-    // 判断是否需要进行GNSS更新
+    // 判断具体的更新过程
     // determine if we should do GNSS update
     int res = isToUpdate(imupre_.time, imucur_.time, updatetime);
 
     if (res == 0) {
-        // 只传播导航状态
+        // 只传播导航状态（只有IMU更新）
         // only propagate navigation state
         insPropagation(imupre_, imucur_);
     } else if (res == 1) {
@@ -181,7 +181,7 @@ void GIEngine::insPropagation(IMU &imupre, IMU &imucur) {
     // system noise propagate, phi-angle error model for attitude error
     Eigen::MatrixXd Phi, F, Qd, G;
 
-    // 初始化Phi阵(状态转移矩阵)，F阵，Qd阵(传播噪声阵)，G阵(噪声驱动阵)
+    // 初始化Phi阵(状态转移矩阵)，F阵(Phi的微分形式)，Qd阵(传播噪声阵)，G阵(噪声驱动阵)
     // initialize Phi (state transition), F matrix, Qd(propagation noise) and G(noise driven) matrix
     Phi.resizeLike(Cov_);
     F.resizeLike(Cov_);
@@ -197,18 +197,25 @@ void GIEngine::insPropagation(IMU &imupre, IMU &imucur) {
     Eigen::Vector2d rmrn;
     Eigen::Vector3d wie_n, wen_n;
     double gravity;
-    rmrn    = Earth::meridianPrimeVerticalRadius(pvapre_.pos[0]);
+
+    // 计算经度和纬度的子午圈曲率半径和卯酉圈曲率半径
+    rmrn  = Earth::meridianPrimeVerticalRadius(pvapre_.pos[0]);
+    // 计算地球重力加速度
     gravity = Earth::gravity(pvapre_.pos);
-    wie_n << WGS84_WIE * cos(pvapre_.pos[0]), 0, -WGS84_WIE * sin(pvapre_.pos[0]);
+    // 地球自转角速度在导航系下的投影
+    wie_n << WGS84_WIE * cos(pvapre_.pos[0]), 0, - WGS84_WIE * sin(pvapre_.pos[0]);
+    // 地球旋转角速度加上由于地球曲率和速度产生的角速度
     wen_n << pvapre_.vel[1] / (rmrn[1] + pvapre_.pos[2]), -pvapre_.vel[0] / (rmrn[0] + pvapre_.pos[2]),
         -pvapre_.vel[1] * tan(pvapre_.pos[0]) / (rmrn[1] + pvapre_.pos[2]);
 
+    // 临时矩阵和向量，用于存储计算中的加速度和角速度
     Eigen::Matrix3d temp;
     Eigen::Vector3d accel, omega;
     double rmh, rnh;
-
+    // 计算在当前高度的经度和纬度方向的曲率半径
     rmh   = rmrn[0] + pvapre_.pos[2];
     rnh   = rmrn[1] + pvapre_.pos[2];
+    // 当前IMU的加速度和角速度
     accel = imucur.dvel / imucur.dt;
     omega = imucur.dtheta / imucur.dt;
 
@@ -220,6 +227,7 @@ void GIEngine::insPropagation(IMU &imupre, IMU &imucur) {
     temp(1, 0)                = pvapre_.vel[1] * tan(pvapre_.pos[0]) / rnh;
     temp(1, 1)                = -(pvapre_.vel[2] + pvapre_.vel[0] * tan(pvapre_.pos[0])) / rnh;
     temp(1, 2)                = pvapre_.vel[1] / rnh;
+    // 填充状态矩阵F中的位置误差项，并初始化速度误差项
     F.block(P_ID, P_ID, 3, 3) = temp;
     F.block(P_ID, V_ID, 3, 3) = Eigen::Matrix3d::Identity();
 
@@ -303,29 +311,31 @@ void GIEngine::gnssUpdate(GNSS &gnssdata) {
 
     // IMU位置转到GNSS天线相位中心位置
     // convert IMU position to GNSS antenna phase center position
-    Eigen::Vector3d antenna_pos;
-    Eigen::Matrix3d Dr, Dr_inv;
-    Dr_inv      = Earth::DRi(pvacur_.pos);
-    Dr          = Earth::DR(pvacur_.pos);
+    Eigen::Vector3d antenna_pos; // 定义天线相位中心位置的向量
+    Eigen::Matrix3d Dr, Dr_inv; // 定义旋转矩阵和其逆矩阵
+    Dr_inv      = Earth::DRi(pvacur_.pos); // 计算当前位置的逆旋转矩阵
+    Dr          = Earth::DR(pvacur_.pos);  // 计算当前位置的旋转矩阵
+    // 计算天线相位中心位置，结合IMU的位置、旋转矩阵和天线杆臂
     antenna_pos = pvacur_.pos + Dr_inv * pvacur_.att.cbn * options_.antlever;
 
     // GNSS位置测量新息
     // compute GNSS position innovation
-    Eigen::MatrixXd dz;
-    dz = Dr * (antenna_pos - gnssdata.blh);
+    Eigen::MatrixXd dz; // 定义测量新息矩阵
+    dz = Dr * (antenna_pos - gnssdata.blh); // 计算天线相位中心与GNSS测量位置之间的差异，并进行旋转
 
     // 构造GNSS位置观测矩阵
     // construct GNSS position measurement matrix
-    Eigen::MatrixXd H_gnsspos;
-    H_gnsspos.resize(3, Cov_.rows());
-    H_gnsspos.setZero();
-    H_gnsspos.block(0, P_ID, 3, 3)   = Eigen::Matrix3d::Identity();
+    Eigen::MatrixXd H_gnsspos; // 定义观测矩阵
+    H_gnsspos.resize(3, Cov_.rows()); // 设置矩阵大小
+    H_gnsspos.setZero(); // 初始化矩阵为零
+    H_gnsspos.block(0, P_ID, 3, 3)   = Eigen::Matrix3d::Identity(); // 设置位置部分为单位矩阵
+    // 设置旋转部分为天线杆臂的反对称矩阵
     H_gnsspos.block(0, PHI_ID, 3, 3) = Rotation::skewSymmetric(pvacur_.att.cbn * options_.antlever);
 
     // 位置观测噪声阵
     // construct measurement noise matrix
-    Eigen::MatrixXd R_gnsspos;
-    R_gnsspos = gnssdata.std.cwiseProduct(gnssdata.std).asDiagonal();
+    Eigen::MatrixXd R_gnsspos; // 定义噪声矩阵
+    R_gnsspos = gnssdata.std.cwiseProduct(gnssdata.std).asDiagonal(); // 根据GNSS数据的标准差构造对角噪声矩阵
 
     // EKF更新协方差和误差状态
     // do EKF update to update covariance and error state
@@ -370,10 +380,11 @@ void GIEngine::EKFPredict(Eigen::MatrixXd &Phi, Eigen::MatrixXd &Qd) {
 
 void GIEngine::EKFUpdate(Eigen::MatrixXd &dz, Eigen::MatrixXd &H, Eigen::MatrixXd &R) {
 
-    assert(H.cols() == Cov_.rows());
-    assert(dz.rows() == H.rows());
-    assert(dz.rows() == R.rows());
-    assert(dz.cols() == 1);
+    // 断言检查，确保观测矩阵和协方差矩阵的维度匹配
+    assert(H.cols() == Cov_.rows()); // H的列数应等于Cov_的行数(观测矩阵 H 的列数等于状态协方差矩阵 Cov_ 的行数)
+    assert(dz.rows() == H.rows()); // dz的行数应等于H的行数(观测差 dz 的行数与观测矩阵 H 的行数相等)
+    assert(dz.rows() == R.rows()); // dz的行数应等于R的行数（观测差 dz 的行数与观测噪声协方差矩阵 R 的行数相等）
+    assert(dz.cols() == 1); // dz应为列向量
 
     // 计算Kalman增益
     // Compute Kalman Gain
@@ -385,12 +396,14 @@ void GIEngine::EKFUpdate(Eigen::MatrixXd &dz, Eigen::MatrixXd &H, Eigen::MatrixX
     Eigen::MatrixXd I;
     I.resizeLike(Cov_);
     I.setIdentity();
-    I = I - K * H;
+    I = I - K * H; // 更新I以反映当前的卡尔曼增益
+
     // 如果每次更新后都进行状态反馈，则更新前dx_一直为0，下式可以简化为：dx_ = K * dz;
     // if state feedback is performed after every update, dx_ is always zero before the update
     // the following formula can be simplified as : dx_ = K * dz;
-    dx_  = dx_ + K * (dz - H * dx_);
-    Cov_ = I * Cov_ * I.transpose() + K * R * K.transpose();
+    dx_  = dx_ + K * (dz - H * dx_); // 更新误差状态dx_
+
+    Cov_ = I * Cov_ * I.transpose() + K * R * K.transpose(); // 更新协方差矩阵
 }
 
 void GIEngine::stateFeedback() {
