@@ -22,6 +22,7 @@
 
 #include "common/earth.h"
 #include "common/rotation.h"
+#include <deque>
 
 #include "gi_engine.h"
 #include "insmech.h"
@@ -58,6 +59,8 @@ GIEngine::GIEngine(GINSOptions &options) {
     // 设置系统状态(位置、速度、姿态和IMU误差)初值和初始协方差
     // set initial state (position, velocity, attitude and IMU error) and covariance
     initialize(options_.initstate, options_.initstate_std);
+
+    pvacur_.att.cbv = Rotation::euler2matrix(options_.odo_euler);
 }
 
 void GIEngine::initialize(const NavState &initstate, const NavState &initstate_std) {
@@ -119,6 +122,13 @@ void GIEngine::newImuProcess() {
         // GNSS数据靠近当前历元，先对当前IMU进行状态传播
         // gnssdata is near current imudata, we should firstly propagate navigation state
         insPropagation(imupre_, imucur_);
+        // if(if_add_odo == true){
+        //     odo_ = GetOdoVel(odo_for_calculate, timestamp_);
+        //     if(odo_.isvalid){
+        //         ODONHCUpdate(odo_, imucur_);
+        //     }
+        //     if_add_odo = false;
+        // }
         gnssUpdate(gnssdata_);
         stateFeedback();
     } else {
@@ -130,7 +140,13 @@ void GIEngine::newImuProcess() {
         // 对前一半IMU进行状态传播
         // propagate navigation state for the first half imudata
         insPropagation(imupre_, midimu);
-
+        // if(if_add_odo == true){
+        //     odo_ = GetOdoVel(odo_for_calculate, midimu.time);
+        //     if(odo_.isvalid){
+        //         ODONHCUpdate(odo_, imucur_);
+        //     }
+        //     if_add_odo = false;
+        // }
         // 整秒时刻进行GNSS更新，并反馈系统状态
         // do GNSS position update at the whole second and feedback system states
         gnssUpdate(gnssdata_);
@@ -140,6 +156,15 @@ void GIEngine::newImuProcess() {
         // propagate navigation state for the second half imudata
         pvapre_ = pvacur_;
         insPropagation(midimu, imucur_);
+    }
+
+    if(if_add_odo == true){
+        odo_ = GetOdoVel(odo_for_calculate, timestamp_);
+        if(odo_.isvalid){
+            ODONHCUpdate(odo_, imucur_);
+            stateFeedback();
+        }
+        if_add_odo = false;
     }
 
     // 检查协方差矩阵对角线元素
@@ -318,6 +343,10 @@ void GIEngine::gnssUpdate(GNSS &gnssdata) {
     // 计算天线相位中心位置，结合IMU的位置、旋转矩阵和天线杆臂
     antenna_pos = pvacur_.pos + Dr_inv * pvacur_.att.cbn * options_.antlever;
 
+    std::cout << antenna_pos << std::endl;
+    std::cout << gnssdata.blh<<std::endl;
+    std::cout << std::endl;
+
     // GNSS位置测量新息
     // compute GNSS position innovation
     Eigen::MatrixXd dz; // 定义测量新息矩阵
@@ -401,6 +430,7 @@ void GIEngine::EKFUpdate(Eigen::MatrixXd &dz, Eigen::MatrixXd &H, Eigen::MatrixX
     // 如果每次更新后都进行状态反馈，则更新前dx_一直为0，下式可以简化为：dx_ = K * dz;
     // if state feedback is performed after every update, dx_ is always zero before the update
     // the following formula can be simplified as : dx_ = K * dz;
+    
     dx_  = dx_ + K * (dz - H * dx_); // 更新误差状态dx_
 
     Cov_ = I * Cov_ * I.transpose() + K * R * K.transpose(); // 更新协方差矩阵
@@ -420,6 +450,9 @@ void GIEngine::stateFeedback() {
     // velocity error feedback
     vectemp = dx_.block(V_ID, 0, 3, 1);
     pvacur_.vel -= vectemp;
+
+    // std::cout << pvacur_.vel<<std::endl;
+    // std::cout << std::endl;
 
     // 姿态误差反馈
     // attitude error feedback
@@ -458,4 +491,101 @@ NavState GIEngine::getNavState() {
     state.imuerror = imuerror_;
 
     return state;
+}
+
+ODO GIEngine::GetOdoVel(std::deque<ODO> &odoraw, double time){
+    ODO tmp_odo;
+    tmp_odo.odo_vel = 0;
+    tmp_odo.isvalid = false;
+    if (odoraw.size() < 5){
+        std::cout << "WARN: too little data to get odovel!" << std::endl;
+        return tmp_odo;
+    }
+
+    double firstvel = 0;
+    double secondvel = 0;
+    double firsttime = 0;
+    double secondtime = 0;
+    int firstindex = 0;
+    int secondindex = 0;
+
+    // Loop through the rows of odoraw
+    for (int i = 0; i < odoraw.size(); ++i) {
+        if (odoraw[i].time <= time) {
+            // Update firstvel and firsttime
+            firstvel = (firstvel * firstindex + odoraw[i].odo_vel) / (firstindex + 1);
+            firsttime = (firsttime * firstindex + odoraw[i].time) / (firstindex + 1);
+            firstindex++;
+        } else {
+            // Update secondvel and secondtime
+            secondvel = (secondvel * secondindex + odoraw[i].odo_vel) / (secondindex + 1);
+            secondtime = (secondtime * secondindex + odoraw[i].time) / (secondindex + 1);
+            secondindex++;
+        }
+    }
+
+    // Compute odovel
+    tmp_odo.odo_vel = firstvel + (time - firsttime) / (secondtime - firsttime) * (secondvel - firstvel);
+    tmp_odo.isvalid = true;
+
+    return tmp_odo;
+}
+
+// Matlab 版本的navstate其中一部分就是gi_engine类的成员变量pvacur_
+// kf.P 和 kf.x分别是gi_engine类成员变量Cov_和dx_
+void GIEngine::ODONHCUpdate(ODO odocur, IMU imucur){
+    Eigen::Vector3d odonhc_vel(odocur.odo_vel, 0, 0);
+    Eigen::Vector3d wib_b, wie_n, wen_n, win_n, wnb_b, vel_pre;
+
+    wib_b = imucur.dtheta / imucur.dt;
+    // 地球自转角速度在导航系下的投影
+    wie_n << WGS84_WIE * cos(pvapre_.pos[0]), 0, - WGS84_WIE * sin(pvapre_.pos[0]);
+    // 地球旋转角速度加上由于地球曲率和速度产生的角速度
+    Eigen::Vector2d rmrn = Earth::meridianPrimeVerticalRadius(pvapre_.pos[0]);
+    wen_n << pvapre_.vel[1] / (rmrn[1] + pvapre_.pos[2]), -pvapre_.vel[0] / (rmrn[0] + pvapre_.pos[2]),
+        -pvapre_.vel[1] * tan(pvapre_.pos[0]) / (rmrn[1] + pvapre_.pos[2]);
+    win_n = wie_n + wen_n;
+    wnb_b = wib_b - pvacur_.att.cbn.transpose() * win_n;
+    vel_pre = pvacur_.att.cbv * (pvacur_.att.cbn.transpose() * pvapre_.vel + Rotation::skewSymmetric(wnb_b) * options_.odolever); // 注意：“cbv” 和 “odolever”
+    
+    // std::cout << pvapre_.vel <<std::endl;
+    // std::cout << odonhc_vel <<std::endl;
+    // std::cout << std::endl;
+
+    Eigen::MatrixXd dz_v = vel_pre + odonhc_vel;
+    Eigen::MatrixXd dz =pvacur_.att.cbn * pvacur_.att.cbv.transpose() * dz_v;
+
+    // std::cout << dz <<std::endl;
+    // std::cout << std::endl;
+    // dz.setZero();
+    /*measurement equation and noise*/
+
+    /*TODO: add measurement equation and noise matrix here!!*/
+
+    // 构造车轮里程计速度观测矩阵
+    Eigen::MatrixXd H_odovel; // 定义观测矩阵
+    H_odovel.resize(3, Cov_.rows()); // 设置矩阵大小
+    H_odovel.setZero(); // 初始化矩阵为零
+    H_odovel.block(0, V_ID, 3 , 3) = Eigen::Matrix3d::Identity();
+    // 设置旋转部分为轮速计杆臂的反对称矩阵
+    H_odovel.block(0, PHI_ID, 3, 3) = Rotation::skewSymmetric(pvacur_.att.cbn * options_.odolever); 
+    
+    // 速度观测噪声阵
+    // construct measurement noise matrix
+    Eigen::Matrix3d R_odovel; // 定义噪声矩阵
+    R_odovel.resize(3, 3);
+    R_odovel.setZero();
+    R_odovel(0, 0) = 0.1;
+    R_odovel(1, 1) = 0.1;
+    R_odovel(2, 2) = 0.1;
+
+    auto temp         = H_odovel * Cov_ * H_odovel.transpose() + R_odovel;
+    Eigen::MatrixXd K = Cov_ * H_odovel.transpose() * temp.inverse();
+
+    Eigen::MatrixXd I;
+    I.resizeLike(Cov_);
+    I.setIdentity();
+    I = I - K * H_odovel; // 更新I以反映当前的卡尔曼增益
+    dx_  = dx_ + K * (dz - H_odovel * dx_); // 更新误差状态dx_
+    Cov_ = I * Cov_ * I.transpose() + K * R_odovel * K.transpose(); // 更新协方差矩阵
 }

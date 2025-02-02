@@ -69,6 +69,11 @@ public:
         gnssdata_.isvalid = true;
     }
 
+    void addODODeque(std::deque<ODO>& odo_deque){
+        odo_for_calculate = odo_deque;
+        if_add_odo = true;
+    }
+
     /**
      * @brief 处理新的IMU数据
      *        process new imudata
@@ -225,6 +230,12 @@ private:
         }
     }
 
+    ODO GetOdoVel(std::deque<ODO> &odoraw, double time);
+
+    void ODONHCUpdate(ODO odocur, IMU imucur);
+
+
+
 private:
     GINSOptions options_;
 
@@ -239,6 +250,9 @@ private:
     IMU imupre_;
     IMU imucur_;
     GNSS gnssdata_;
+    ODO odo_;
+    std::deque<ODO> odo_for_calculate;
+    bool if_add_odo = false;
 
     // IMU状态（位置、速度、姿态和IMU误差）
     // imu state (position, velocity, attitude and imu error)

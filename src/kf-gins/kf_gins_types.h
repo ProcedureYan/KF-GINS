@@ -32,6 +32,9 @@
 typedef struct Attitude {
     Eigen::Quaterniond qbn;
     Eigen::Matrix3d cbn;
+    // ***********************************//
+    Eigen::Matrix3d cbv;
+
     Eigen::Vector3d euler;
 } Attitude;
 
@@ -79,7 +82,11 @@ typedef struct GINSOptions {
 
     // 安装参数
     // install parameters
-    Eigen::Vector3d antlever = {0, 0, 0};
+    Eigen::Vector3d antlever = {0, 0, 0}; //天线杆臂
+
+    // ****************************************************************** //
+    Eigen::Vector3d odolever = {0, 0, 0}; //车轮里程计杆臂
+    Eigen::Vector3d odo_euler; // 车轮里程计安装角度/body相对于vehicle的角度
 
     void print_options() {
         std::cout << "---------------KF-GINS Options:---------------" << std::endl;

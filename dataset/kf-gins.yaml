@@ -7,7 +7,6 @@
 # imudata and gnssdata filepath
 imupath: "./dataset/Leador-A15.txt"
 gnsspath: "./dataset/GNSS-RTK.txt"
-
 # 输出文件夹路径
 # output folder path
 outputpath: "./dataset"
@@ -38,6 +37,9 @@ initvel: [ 0.0, 0.0, 0.0 ]
 # 初始姿态, 欧拉角(ZYX旋转顺序), 横滚, 俯仰, 航向
 # initial attitude, euler angle(ZYX rotation), roll, pitch, yaw [deg, deg, deg]
 initatt: [ 0.85421502, -2.03480295, 185.70235133 ]
+
+# 初始body相对于vehicle的角度
+initodoatt: [ 0, 0, 0 ]
 
 # 初始IMU零偏和比例因子, IMU的三个轴(前、右、下)
 # initial IMU bias and scale error, three axes of the imu (forward, right and down)
@@ -83,3 +85,6 @@ imunoise:
 # 天线杆臂, IMU坐标系前右下方向
 # antenna lever, forward, right and down in the imu frame. [m]
 antlever:  [ 0.136, -0.301, -0.184 ]
+
+# 轮速计杆臂，前右下
+odolever:  [ 0, 0, 0 ]

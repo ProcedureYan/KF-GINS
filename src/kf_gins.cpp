@@ -25,11 +25,13 @@
 #include <iomanip>
 #include <iostream>
 #include <yaml-cpp/yaml.h>
+#include <deque>
 
 #include "common/angle.h"
 #include "fileio/filesaver.h"
 #include "fileio/gnssfileloader.h"
 #include "fileio/imufileloader.h"
+#include "fileio/odofileloader.h"
 
 #include "kf-gins/gi_engine.h"
 
@@ -73,10 +75,14 @@ int main(int argc, char *argv[]) {
     // 读取文件路径配置
     // load filepath configuration
     std::string imupath, gnsspath, outputpath;
+    //********************************//
+    std::string odopath;
     try {
         imupath    = config["imupath"].as<std::string>();
         gnsspath   = config["gnsspath"].as<std::string>();
         outputpath = config["outputpath"].as<std::string>();
+
+        odopath = config["odopath"].as<std::string>();
     } catch (YAML::Exception &exception) {
         std::cout << "Failed when loading configuration. Please check the file path and output path!" << std::endl;
         return -1;
@@ -96,11 +102,13 @@ int main(int argc, char *argv[]) {
                   << std::endl;
         return -1;
     }
-
     // 加载GNSS文件和IMU文件
     // load GNSS file and IMU file
     GnssFileLoader gnssfile(gnsspath);
     ImuFileLoader imufile(imupath, imudatalen, imudatarate);
+    //********************************//
+    int epoch_to_getvel = 20;
+    ODOFileLoader odofile(odopath, 2);
 
     // 构造GIEngine
     // Construct GIEngine
@@ -132,7 +140,6 @@ int main(int argc, char *argv[]) {
         std::cout << "Process time ERROR!" << std::endl;
         return -1;
     }
-
     // 数据对齐
     // data alignment
     IMU imu_cur;
@@ -144,6 +151,21 @@ int main(int argc, char *argv[]) {
     do {
         gnss = gnssfile.next();
     } while (gnss.time <= starttime);
+
+    //********************************//
+    ODO odo_cur;
+    do {
+        odo_cur = odofile.next();
+    } while (odo_cur.time < starttime);
+
+
+    std::deque<ODO> odo_que;
+    odo_que.push_back(odo_cur);
+    for(int i = 0; i < epoch_to_getvel/2;i ++){
+        odo_cur = odofile.next();
+        odo_que.push_back(odo_cur);
+    }
+    double odoupdatetime = odo_cur.time;
 
     // 添加IMU数据到GIEngine中，补偿IMU误差
     // add imudata to GIEngine and compensate IMU error
@@ -180,6 +202,21 @@ int main(int argc, char *argv[]) {
         }
         giengine.addImuData(imu_cur);
 
+        if(imu_cur.time > odoupdatetime){
+            while(odo_cur.time < odoupdatetime){
+                odo_cur = odofile.next();
+                odo_que.push_back(odo_cur);
+            }
+            while(odo_que.size() > epoch_to_getvel/2)
+                odo_que.pop_front();
+            for(int i = 0;i < epoch_to_getvel/2;i ++){
+                odo_cur = odofile.next();
+                odo_que.push_back(odo_cur);
+            }
+            giengine.addODODeque(odo_que);
+            odoupdatetime = odo_cur.time;
+        }
+
         // 处理新的IMU数据
         // process new imudata
         giengine.newImuProcess();
@@ -208,6 +245,9 @@ int main(int argc, char *argv[]) {
     // close opened file
     imufile.close();
     gnssfile.close();
+
+    odofile.close();
+
     navfile.close();
     imuerrfile.close();
     stdfile.close();
@@ -237,6 +277,8 @@ bool loadConfig(YAML::Node &config, GINSOptions &options) {
         vec1 = config["initpos"].as<std::vector<double>>();
         vec2 = config["initvel"].as<std::vector<double>>();
         vec3 = config["initatt"].as<std::vector<double>>();
+
+        vec4 = config["initodoatt"].as<std::vector<double>>();
     } catch (YAML::Exception &exception) {
         std::cout << "Failed when loading configuration. Please check initial position, velocity, and attitude!"
                   << std::endl;
@@ -246,6 +288,8 @@ bool loadConfig(YAML::Node &config, GINSOptions &options) {
         options.initstate.pos[i]   = vec1[i] * D2R;
         options.initstate.vel[i]   = vec2[i];
         options.initstate.euler[i] = vec3[i] * D2R;
+
+        options.odo_euler[i] = vec4[i] * D2R;
     }
     options.initstate.pos[2] *= R2D;
 
@@ -360,6 +404,14 @@ bool loadConfig(YAML::Node &config, GINSOptions &options) {
         return false;
     }
     options.antlever = Eigen::Vector3d(vec1.data());
+
+    try {
+        vec1 = config["odolever"].as<std::vector<double>>();
+    } catch (YAML::Exception &exception) {
+        std::cout << "Failed when loading configuration. Please check odo leverarm!" << std::endl;
+        return false;
+    }
+    options.odolever = Eigen::Vector3d(vec1.data());
 
     return true;
 }

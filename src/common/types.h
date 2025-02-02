@@ -53,4 +53,13 @@ typedef struct Pose {
     Vector3d t;
 } Pose;
 
+typedef struct ODO {
+    double time;
+    bool isvalid;
+    double odo_vel;
+    double odo_std;
+    // Vector3d odo_vel;
+
+} ODO;
+
 #endif // TYPES_H
